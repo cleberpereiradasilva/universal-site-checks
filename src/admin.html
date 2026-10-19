@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -47,39 +47,39 @@
 <main>
   <h1>Universal Monitor</h1>
   <div class="sub">
-    <span>Checa a cada 1 min. Alerta no Telegram ao cair e ao voltar. Resumo diário às 22h.</span>
+    <span>Checks every minute. Telegram alert when a site goes down and when it recovers. Daily summary at 22:00 (BRT).</span>
     <span id="cfg"></span>
   </div>
 
   <div class="card">
     <form id="add">
-      <input id="url" type="url" placeholder="https://meusite.com" required>
-      <input id="name" type="text" placeholder="Nome (opcional)" maxlength="80">
-      <button type="submit" id="addBtn">Adicionar</button>
+      <input id="url" type="url" placeholder="https://mysite.com" required>
+      <input id="name" type="text" placeholder="Name (optional)" maxlength="80">
+      <button type="submit" id="addBtn">Add</button>
     </form>
     <div class="msg" id="addMsg"></div>
   </div>
 
   <div class="card">
     <div class="actions">
-      <button class="ghost" id="checkBtn">Checar agora</button>
-      <button class="ghost" id="tgBtn">Testar Telegram</button>
+      <button class="ghost" id="checkBtn">Check now</button>
+      <button class="ghost" id="tgBtn">Test Telegram</button>
       <span class="msg" id="actMsg"></span>
     </div>
     <table>
-      <thead><tr><th>Status</th><th>Site</th><th>Última checagem</th><th></th></tr></thead>
+      <thead><tr><th>Status</th><th>Site</th><th>Last check</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
-    <div class="empty" id="empty" hidden>Nenhum site cadastrado.</div>
+    <div class="empty" id="empty" hidden>No sites registered yet.</div>
   </div>
 </main>
 
 <script>
   const $ = (id) => document.getElementById(id);
-  const fmtTime = (ts) => ts ? new Date(ts).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+  const fmtTime = (ts) => ts ? new Date(ts).toLocaleString('en-GB', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '—';
   const fmtDur = (ms) => {
     const m = Math.round(ms / 60000);
-    if (m < 1) return 'menos de 1 min';
+    if (m < 1) return 'less than 1 min';
     if (m < 60) return m + ' min';
     const h = Math.floor(m / 60);
     if (h < 24) return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'min' : '');
@@ -92,7 +92,7 @@
   async function api(path, opts) {
     const res = await fetch(path, { headers: { 'content-type': 'application/json' }, ...opts });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || ('Erro ' + res.status));
+    if (!res.ok) throw new Error(data.error || ('Error ' + res.status));
     return data;
   }
 
@@ -104,14 +104,14 @@
     for (const s of sites) {
       const tr = document.createElement('tr');
       tr.className = s.status;
-      const stText = s.status === 'up' ? 'No ar' : s.status === 'down' ? 'Fora' : 'Aguardando';
-      const sinceText = s.since && s.status !== 'unknown' ? ' há ' + fmtDur(now - s.since) : '';
+      const stText = s.status === 'up' ? 'Up' : s.status === 'down' ? 'Down' : 'Pending';
+      const sinceText = s.since && s.status !== 'unknown' ? 'for ' + fmtDur(now - s.since) : '';
       const detail = s.last_code ? 'HTTP ' + s.last_code : (s.last_error || '');
       tr.innerHTML =
         '<td class="st"><span class="dot"></span>' + stText + '<div class="meta">' + escapeHtml(sinceText) + '</div></td>' +
         '<td><div class="name">' + escapeHtml(s.name || '') + '</div><div class="url">' + escapeHtml(s.url) + '</div></td>' +
         '<td class="meta">' + fmtTime(s.last_check) + '<br>' + escapeHtml(detail) + '</td>' +
-        '<td><button class="del" data-id="' + s.id + '" data-label="' + escapeHtml(s.name || s.url) + '">Remover</button></td>';
+        '<td><button class="del" data-id="' + s.id + '" data-label="' + escapeHtml(s.name || s.url) + '">Remove</button></td>';
       rows.appendChild(tr);
     }
   }
@@ -120,8 +120,8 @@
     try {
       const c = await api('/api/config');
       $('cfg').innerHTML =
-        '<span class="pill ' + (c.telegram ? 'on' : 'off') + '">Telegram ' + (c.telegram ? 'ok' : 'não configurado') + '</span> ' +
-        '<span class="pill ' + (c.healthchecks ? 'on' : 'off') + '">Healthchecks ' + (c.healthchecks ? 'ok' : 'não configurado') + '</span>';
+        '<span class="pill ' + (c.telegram ? 'on' : 'off') + '">Telegram ' + (c.telegram ? 'ok' : 'not configured') + '</span> ' +
+        '<span class="pill ' + (c.healthchecks ? 'on' : 'off') + '">Healthchecks ' + (c.healthchecks ? 'ok' : 'not configured') + '</span>';
     } catch {}
   }
 
@@ -129,11 +129,11 @@
     e.preventDefault();
     const btn = $('addBtn');
     btn.disabled = true;
-    setMsg($('addMsg'), 'Adicionando e checando...');
+    setMsg($('addMsg'), 'Adding and checking...');
     try {
       await api('/api/sites', { method: 'POST', body: JSON.stringify({ url: $('url').value, name: $('name').value }) });
       $('url').value = ''; $('name').value = '';
-      setMsg($('addMsg'), 'Adicionado.', 'ok');
+      setMsg($('addMsg'), 'Added.', 'ok');
       await load();
     } catch (err) {
       setMsg($('addMsg'), err.message, 'err');
@@ -143,7 +143,7 @@
   $('rows').addEventListener('click', async (e) => {
     const btn = e.target.closest('button.del');
     if (!btn) return;
-    if (!confirm('Remover ' + btn.dataset.label + '?')) return;
+    if (!confirm('Remove ' + btn.dataset.label + '?')) return;
     btn.disabled = true;
     try { await api('/api/sites/' + btn.dataset.id, { method: 'DELETE' }); await load(); }
     catch (err) { alert(err.message); btn.disabled = false; }
@@ -152,10 +152,10 @@
   $('checkBtn').addEventListener('click', async () => {
     const btn = $('checkBtn');
     btn.disabled = true;
-    setMsg($('actMsg'), 'Checando...');
+    setMsg($('actMsg'), 'Checking...');
     try {
       const r = await api('/api/check', { method: 'POST' });
-      setMsg($('actMsg'), r.ok ? (r.up + ' no ar, ' + r.down + ' fora, ' + r.alerts + ' alerta(s)') : ('Erro: ' + r.error), r.ok ? 'ok' : 'err');
+      setMsg($('actMsg'), r.ok ? (r.up + ' up, ' + r.down + ' down, ' + r.alerts + ' alert(s)') : ('Error: ' + r.error), r.ok ? 'ok' : 'err');
       await load();
     } catch (err) { setMsg($('actMsg'), err.message, 'err'); }
     finally { btn.disabled = false; }
@@ -164,10 +164,10 @@
   $('tgBtn').addEventListener('click', async () => {
     const btn = $('tgBtn');
     btn.disabled = true;
-    setMsg($('actMsg'), 'Enviando...');
+    setMsg($('actMsg'), 'Sending...');
     try {
       const r = await api('/api/test-telegram', { method: 'POST' });
-      setMsg($('actMsg'), r.ok ? 'Mensagem enviada. Confere no Telegram.' : (r.configured ? 'Telegram recusou. Veja os logs.' : 'Telegram não configurado.'), r.ok ? 'ok' : 'err');
+      setMsg($('actMsg'), r.ok ? 'Message sent. Check Telegram.' : (r.configured ? 'Telegram rejected the message. See logs.' : 'Telegram not configured.'), r.ok ? 'ok' : 'err');
     } catch (err) { setMsg($('actMsg'), err.message, 'err'); }
     finally { btn.disabled = false; }
   });

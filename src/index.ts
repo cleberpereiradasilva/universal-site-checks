@@ -72,7 +72,7 @@ async function runChecks(env: Env): Promise<RunSummary> {
     console.error("D1 read failed", msg);
     await notify(
       env,
-      `⚠️ <b>Banco (D1) não respondeu</b>\n<code>${esc(msg)}</code>\nMonitor não conseguiu ler a lista de sites.`,
+      `⚠️ <b>Database (D1) did not respond</b>\n<code>${esc(msg)}</code>\nThe monitor could not read the site list.`,
     );
     await pingHealthchecks(env, "fail");
     return { ok: false, checked: 0, up: 0, down: 0, alerts: 1, error: msg };
@@ -107,10 +107,10 @@ async function processSites(env: Env, sites: Site[]): Promise<RunSummary> {
     );
 
     if (changed && newStatus === "down") {
-      messages.push(`🔴 <b>${esc(label(site))}</b> caiu\n${esc(site.url)}\n${esc(r.detail)}`);
+      messages.push(`🔴 <b>${esc(label(site))}</b> is DOWN\n${esc(site.url)}\n${esc(r.detail)}`);
     } else if (changed && newStatus === "up" && site.status === "down") {
-      const downFor = site.since ? fmtDuration(now - site.since) : "tempo desconhecido";
-      messages.push(`🟢 <b>${esc(label(site))}</b> voltou\n${esc(site.url)}\nFicou ${esc(downFor)} fora.`);
+      const downFor = site.since ? fmtDuration(now - site.since) : "an unknown time";
+      messages.push(`🟢 <b>${esc(label(site))}</b> is back UP\n${esc(site.url)}\nWas down for ${esc(downFor)}.`);
     }
   });
 
@@ -121,7 +121,7 @@ async function processSites(env: Env, sites: Site[]): Promise<RunSummary> {
     ok = false;
     const msg = errMsg(err);
     console.error("D1 write failed", msg);
-    messages.push(`⚠️ <b>Falha ao gravar estado no D1</b>\n<code>${esc(msg)}</code>`);
+    messages.push(`⚠️ <b>Failed to save state to D1</b>\n<code>${esc(msg)}</code>`);
   }
 
   // Sequential on purpose: Telegram rate-limits bursts.
@@ -162,12 +162,12 @@ async function fetchOnce(url: string): Promise<CheckResult> {
       up,
       code: res.status,
       error: up ? null : label,
-      detail: `${label} em ${ms}ms`,
+      detail: `${label} in ${ms}ms`,
       ms,
     };
   } catch (err) {
     const ms = Date.now() - started;
-    const msg = controller.signal.aborted ? `timeout após ${CHECK_TIMEOUT_MS / 1000}s` : friendlyNetError(err);
+    const msg = controller.signal.aborted ? `timeout after ${CHECK_TIMEOUT_MS / 1000}s` : friendlyNetError(err);
     return { up: false, code: null, error: msg, detail: msg, ms };
   } finally {
     clearTimeout(timer);
@@ -181,7 +181,7 @@ async function dailyReport(env: Env): Promise<void> {
   } catch (err) {
     await notify(
       env,
-      `⚠️ <b>Relatório diário</b>: banco (D1) não respondeu.\n<code>${esc(errMsg(err))}</code>`,
+      `⚠️ <b>Daily report</b>: database (D1) did not respond.\n<code>${esc(errMsg(err))}</code>`,
     );
     return;
   }
@@ -191,14 +191,14 @@ async function dailyReport(env: Env): Promise<void> {
   const down = sites.filter((s) => s.status === "down");
   let msg: string;
   if (sites.length === 0) {
-    msg = `ℹ️ <b>${time}</b> — monitor vivo, mas nenhum site cadastrado.`;
+    msg = `ℹ️ <b>${time}</b> — monitor alive, but no sites registered.`;
   } else if (down.length === 0) {
-    msg = `✅ <b>${time}</b> — tudo ok. ${sites.length} site(s) no ar, monitor vivo.`;
+    msg = `✅ <b>${time}</b> — all good. ${sites.length} site(s) up, monitor alive.`;
   } else {
     const lines = down.map(
-      (s) => `🔴 ${esc(label(s))} (${esc(s.since ? fmtDuration(now - s.since) : "?")} fora)`,
+      (s) => `🔴 ${esc(label(s))} (down for ${esc(s.since ? fmtDuration(now - s.since) : "?")})`,
     );
-    msg = `⚠️ <b>${time}</b> — ${down.length} de ${sites.length} site(s) fora:\n${lines.join("\n")}`;
+    msg = `⚠️ <b>${time}</b> — ${down.length} of ${sites.length} site(s) down:\n${lines.join("\n")}`;
   }
   await notify(env, msg);
 }
@@ -257,7 +257,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
   if (path === "/") return Response.redirect(new URL("/admin", url).toString(), 302);
 
   if (!authorized(request, env)) {
-    return new Response("Autenticação necessária", {
+    return new Response("Authentication required", {
       status: 401,
       headers: { "WWW-Authenticate": 'Basic realm="universal-monitor", charset="UTF-8"' },
     });
@@ -280,7 +280,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     if (del && request.method === "DELETE") {
       const id = Number(del[1]);
       const r = await env.DB.prepare("DELETE FROM sites WHERE id = ?").bind(id).run();
-      if (!r.meta.changes) return json({ error: "Site não encontrado" }, 404);
+      if (!r.meta.changes) return json({ error: "Site not found" }, 404);
       return json({ ok: true });
     }
 
@@ -289,7 +289,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     }
 
     if (path === "/api/test-telegram" && request.method === "POST") {
-      const sent = await notify(env, `🧪 Teste do universal-monitor em ${fmtTime(Date.now())}. Se chegou, Telegram ok.`);
+      const sent = await notify(env, `🧪 universal-monitor test at ${fmtTime(Date.now())}. If you can read this, Telegram works.`);
       return json({ ok: sent, configured: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID) });
     }
 
@@ -300,7 +300,7 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
       });
     }
 
-    return json({ error: "Não encontrado" }, 404);
+    return json({ error: "Not found" }, 404);
   } catch (err) {
     console.error("request failed", errMsg(err));
     return json({ error: errMsg(err) }, 500);
@@ -312,7 +312,7 @@ async function addSite(request: Request, env: Env): Promise<Response> {
   try {
     body = await request.json();
   } catch {
-    return json({ error: "JSON inválido" }, 400);
+    return json({ error: "Invalid JSON" }, 400);
   }
 
   const rawUrl = typeof body.url === "string" ? body.url.trim() : "";
@@ -322,10 +322,10 @@ async function addSite(request: Request, env: Env): Promise<Response> {
   try {
     parsed = new URL(rawUrl);
   } catch {
-    return json({ error: "URL inválida. Use http:// ou https://" }, 400);
+    return json({ error: "Invalid URL. Use http:// or https://" }, 400);
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return json({ error: "Só http:// ou https://" }, 400);
+    return json({ error: "Only http:// or https:// are allowed" }, 400);
   }
 
   const now = Date.now();
@@ -334,7 +334,7 @@ async function addSite(request: Request, env: Env): Promise<Response> {
       .bind(parsed.toString(), name, now)
       .run();
   } catch (err) {
-    if (/UNIQUE/i.test(errMsg(err))) return json({ error: "URL já cadastrada" }, 409);
+    if (/UNIQUE/i.test(errMsg(err))) return json({ error: "URL already registered" }, 409);
     throw err;
   }
 
@@ -401,16 +401,16 @@ function esc(s: string): string {
 function describeStatus(code: number): string {
   switch (code) {
     case 530:
-      return "HTTP 530 (DNS não resolve / origem inexistente)";
+      return "HTTP 530 (DNS does not resolve / origin does not exist)";
     case 521:
-      return "HTTP 521 (servidor recusou conexão)";
+      return "HTTP 521 (origin refused the connection)";
     case 522:
-      return "HTTP 522 (timeout de conexão)";
+      return "HTTP 522 (connection timed out)";
     case 523:
-      return "HTTP 523 (origem inalcançável)";
+      return "HTTP 523 (origin unreachable)";
     case 525:
     case 526:
-      return `HTTP ${code} (erro de certificado SSL)`;
+      return `HTTP ${code} (SSL certificate error)`;
     default:
       return `HTTP ${code}`;
   }
@@ -419,9 +419,9 @@ function describeStatus(code: number): string {
 // Workers report DNS/TLS/connect failures with opaque internal messages; translate the common ones.
 function friendlyNetError(err: unknown): string {
   const raw = errMsg(err);
-  if (/lookup address|ENOTFOUND|getaddrinfo|internal error/i.test(raw)) return "sem resposta (DNS ou conexão recusada)";
-  if (/certificate|TLS|SSL/i.test(raw)) return `erro de certificado/TLS: ${raw.slice(0, 100)}`;
-  return `erro de conexão: ${raw.slice(0, 120)}`;
+  if (/lookup address|ENOTFOUND|getaddrinfo|internal error/i.test(raw)) return "no response (DNS failure or connection refused)";
+  if (/certificate|TLS|SSL/i.test(raw)) return `TLS/certificate error: ${raw.slice(0, 100)}`;
+  return `connection error: ${raw.slice(0, 120)}`;
 }
 
 function errMsg(err: unknown): string {
@@ -435,7 +435,7 @@ function sleep(ms: number): Promise<void> {
 
 function fmtDuration(ms: number): string {
   const mins = Math.max(0, Math.round(ms / 60_000));
-  if (mins < 1) return "menos de 1 min";
+  if (mins < 1) return "less than 1 min";
   if (mins < 60) return `${mins} min`;
   const hours = Math.floor(mins / 60);
   const rest = mins % 60;
@@ -446,11 +446,12 @@ function fmtDuration(ms: number): string {
 }
 
 function fmtTime(ts: number): string {
-  return new Intl.DateTimeFormat("pt-BR", {
+  return new Intl.DateTimeFormat("en-GB", {
     timeZone: TZ,
     day: "2-digit",
     month: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    hour12: false,
   }).format(new Date(ts));
 }

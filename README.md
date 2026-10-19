@@ -1,129 +1,130 @@
 # universal-monitor
 
-Monitor de uptime para sites próprios, rodando em um único **Cloudflare Worker** (plano grátis).
+Uptime monitor for your own websites, running as a single **Cloudflare Worker** (free plan).
 
-- Checa todas as URLs cadastradas **a cada 1 minuto**.
-- Avisa no **Telegram** quando um site cai e quando volta (com o tempo que ficou fora).
-- Manda um **resumo diário às 22h** (horário de Brasília) dizendo que está tudo ok, ou listando o que está fora.
-- Pinga o **healthchecks.io** a cada rodada. Se o próprio monitor parar, o healthchecks avisa por um canal independente.
-- Painel web simples em `/admin` para adicionar e remover URLs.
+- Checks every registered URL **once a minute**.
+- Sends a **Telegram** alert when a site goes down and when it comes back (with the downtime duration).
+- Sends a **daily summary at 22:00** (America/Sao_Paulo) saying everything is fine, or listing what is down.
+- Pings **healthchecks.io** on every run. If the monitor itself stops, healthchecks.io alerts you through an independent channel.
+- Minimal web panel at `/admin` to add and remove URLs.
 
-Sem histórico, sem gráficos. Só o estado atual de cada site.
+No history, no charts. Only the current state of each site.
 
 ---
 
-## Sumário
+## Contents
 
-1. [Arquitetura](#arquitetura)
-2. [Como funciona](#como-funciona)
+1. [Architecture](#architecture)
+2. [How it works](#how-it-works)
 3. [Endpoints](#endpoints)
-4. [Segredos e configuração](#segredos-e-configuração)
-5. [Deploy do zero](#deploy-do-zero)
-6. [Operação do dia a dia](#operação-do-dia-a-dia)
-7. [Desenvolvimento local](#desenvolvimento-local)
-8. [Limites do plano grátis](#limites-do-plano-grátis)
-9. [Solução de problemas](#solução-de-problemas)
-10. [Estrutura do projeto](#estrutura-do-projeto)
+4. [Secrets and configuration](#secrets-and-configuration)
+5. [Deploy from scratch](#deploy-from-scratch)
+6. [Day-to-day operations](#day-to-day-operations)
+7. [Local development](#local-development)
+8. [Free plan limits](#free-plan-limits)
+9. [Troubleshooting](#troubleshooting)
+10. [Before publishing the repository](#before-publishing-the-repository)
+11. [Project structure](#project-structure)
 
 ---
 
-## Arquitetura
+## Architecture
 
 ```
                  cron * * * * *            ┌────────────┐
-                 cron 0 1 * * * (22h BRT)  │  Telegram  │◄── alertas, resumo diário
+                 cron 0 1 * * * (22:00 BRT)│  Telegram  │◄── alerts, daily summary
                         │                  └────────────┘
                         ▼                        ▲
 ┌──────────┐    ┌──────────────────┐             │
-│  Você    │───►│ Cloudflare Worker│─────────────┘
-│ /admin   │    │  src/index.ts    │──► fetch nos sites cadastrados
+│  You     │───►│ Cloudflare Worker│─────────────┘
+│ /admin   │    │  src/index.ts    │──► fetch each registered site
 └──────────┘    └────────┬─────────┘
                          │                 ┌────────────────┐
-                         ├────────────────►│ healthchecks.io│──► Telegram (bot deles)
-                         │  ping por rodada└────────────────┘    se o Worker parar
+                         ├────────────────►│ healthchecks.io│──► Telegram (their bot)
+                         │  ping per run   └────────────────┘    if the Worker stops
                          ▼
                    ┌───────────┐
-                   │ D1 (SQLite)│  tabela `sites`: url, nome, status atual
+                   │ D1 (SQLite)│  table `sites`: url, name, current status
                    └───────────┘
 ```
 
-Três serviços independentes, zero correlação entre eles:
+Three independent services, no shared failure mode:
 
-| Peça | Função | Se cair |
+| Component | Role | If it fails |
 |---|---|---|
-| Cloudflare Worker + D1 | Executa as checagens e guarda as URLs | healthchecks.io para de receber ping e avisa |
-| Telegram (seu bot) | Entrega os alertas | Resumo das 22h não chega: sinal de que o bot morreu |
-| healthchecks.io | Vigia o Worker | Worker continua alertando normalmente |
+| Cloudflare Worker + D1 | Runs the checks and stores the URLs | healthchecks.io stops receiving pings and alerts you |
+| Telegram (your bot) | Delivers the alerts | The 22:00 summary does not arrive: sign the bot is broken |
+| healthchecks.io | Watches the Worker | The Worker keeps alerting as usual |
 
 ---
 
-## Como funciona
+## How it works
 
-### Checagem (cron `* * * * *`)
+### Check run (cron `* * * * *`)
 
-1. Lê todas as URLs do D1.
-2. Faz `GET` em todas em paralelo. Timeout de **10 s**. Segue redirects. `cache: no-store`.
-3. **No ar** = status HTTP `< 400`. Qualquer outra coisa (4xx, 5xx, timeout, DNS, TLS) = **fora**.
-4. Se falhar, espera 2 s e tenta **mais uma vez** antes de considerar fora. Evita falso positivo por soluço de rede.
-5. Grava no D1: `status`, `since` (quando mudou), `last_check`, `last_code`, `last_error`.
-6. **Só alerta em transição**:
-   - `up → down`: `🔴 Nome caiu` + URL + motivo (`HTTP 503 em 812ms`, `timeout após 10s`, etc).
-   - `down → up`: `🟢 Nome voltou` + `Ficou 12 min fora`.
-   - Site continua fora: silêncio. Não repete alerta a cada minuto.
-7. Ao final, pinga o healthchecks.io (`POST` na ping URL).
-8. Se o D1 não responder: manda `⚠️ Banco (D1) não respondeu` no Telegram e pinga `<ping-url>/fail` no healthchecks. Os dois canais disparam.
+1. Reads every URL from D1.
+2. Sends a `GET` to all of them in parallel. **10 s** timeout. Follows redirects. `cache: no-store`.
+3. **Up** = HTTP status `< 400`. Anything else (4xx, 5xx, timeout, DNS, TLS) = **down**.
+4. On failure, waits 2 s and tries **once more** before declaring the site down. Avoids false positives from a single network hiccup.
+5. Writes to D1: `status`, `since` (when the status last changed), `last_check`, `last_code`, `last_error`.
+6. **Alerts only on transitions**:
+   - `up → down`: `🔴 Name is DOWN` + URL + reason (`HTTP 503 in 812ms`, `timeout after 10s`, ...).
+   - `down → up`: `🟢 Name is back UP` + `Was down for 12 min`.
+   - Site still down: silence. It does not repeat the alert every minute.
+7. At the end, pings healthchecks.io (`POST` to the ping URL).
+8. If D1 does not respond: sends `⚠️ Database (D1) did not respond` to Telegram and pings `<ping-url>/fail` on healthchecks.io. Both channels fire.
 
-Códigos de erro da rede Cloudflare são traduzidos na mensagem:
+Cloudflare network error codes are translated in the message:
 
-| Código | Significado mostrado |
+| Code | Shown as |
 |---|---|
-| 530 | DNS não resolve / origem inexistente |
-| 521 | servidor recusou conexão |
-| 522 | timeout de conexão |
-| 523 | origem inalcançável |
-| 525 / 526 | erro de certificado SSL |
+| 530 | DNS does not resolve / origin does not exist |
+| 521 | origin refused the connection |
+| 522 | connection timed out |
+| 523 | origin unreachable |
+| 525 / 526 | SSL certificate error |
 
-### Resumo diário (cron `0 1 * * *`)
+### Daily summary (cron `0 1 * * *`)
 
-`01:00 UTC` = `22:00` em `America/Sao_Paulo` (Brasil não tem horário de verão desde 2019).
+`01:00 UTC` = `22:00` in `America/Sao_Paulo` (Brazil has had no daylight saving time since 2019).
 
-- Tudo ok: `✅ 19/10, 22:00 — tudo ok. 5 site(s) no ar, monitor vivo.`
-- Algo fora: `⚠️ 19/10, 22:00 — 1 de 5 site(s) fora:` + lista com tempo fora.
-- Nenhum site cadastrado: `ℹ️ ... monitor vivo, mas nenhum site cadastrado.`
+- All good: `✅ 19/10, 22:00 — all good. 5 site(s) up, monitor alive.`
+- Something down: `⚠️ 19/10, 22:00 — 1 of 5 site(s) down:` + list with downtime.
+- No sites registered: `ℹ️ ... monitor alive, but no sites registered.`
 
-Serve de prova de vida do bot do Telegram. Se um dia não chegar, o bot ou o Worker morreu.
+This doubles as a liveness signal for the Telegram bot. If it ever fails to arrive, the bot or the Worker is dead.
 
-### Novo site
+### New site
 
-Ao cadastrar uma URL (painel ou API), o Worker já checa na hora. O painel mostra o status real imediatamente, e se o site já estiver fora, o alerta sai no mesmo momento.
+When a URL is added (panel or API) the Worker checks it immediately. The panel shows the real status right away, and if the site is already down the alert goes out at once.
 
 ---
 
 ## Endpoints
 
-Base: `https://universal-monitor.<sua-conta>.workers.dev`
+Base: `https://universal-monitor.<your-account>.workers.dev`
 
-**Todos os endpoints (exceto `/`) exigem HTTP Basic Auth** com `ADMIN_USER` / `ADMIN_PASS`.
-Sem credencial, ou com credencial errada: `401` com header `WWW-Authenticate: Basic`.
+**Every endpoint (except `/`) requires HTTP Basic Auth** with `ADMIN_USER` / `ADMIN_PASS`.
+Missing or wrong credentials: `401` with header `WWW-Authenticate: Basic`.
 
-Respostas são JSON (`content-type: application/json; charset=utf-8`), exceto `/admin` que é HTML.
+Responses are JSON (`content-type: application/json; charset=utf-8`), except `/admin`, which is HTML.
 
-| Método | Caminho | O que faz |
+| Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/` | Redireciona (302) para `/admin` |
-| `GET` | `/admin` | Painel web |
-| `GET` | `/api/sites` | Lista todos os sites com estado atual |
-| `POST` | `/api/sites` | Cadastra uma URL e já checa |
-| `DELETE` | `/api/sites/:id` | Remove um site |
-| `POST` | `/api/check` | Roda uma rodada de checagem agora (igual ao cron) |
-| `POST` | `/api/test-telegram` | Envia mensagem de teste no Telegram |
-| `GET` | `/api/config` | Diz se Telegram e healthchecks estão configurados |
+| `GET` | `/` | Redirects (302) to `/admin` |
+| `GET` | `/admin` | Web panel |
+| `GET` | `/api/sites` | Lists all sites with their current state |
+| `POST` | `/api/sites` | Registers a URL and checks it right away |
+| `DELETE` | `/api/sites/:id` | Removes a site |
+| `POST` | `/api/check` | Runs a full check round now (same as the cron) |
+| `POST` | `/api/test-telegram` | Sends a test message to Telegram |
+| `GET` | `/api/config` | Tells whether Telegram and healthchecks are configured |
 
-Nos exemplos abaixo, `$A` é `usuario:senha` e `$B` é a URL base:
+In the examples below `$A` is `user:password` and `$B` is the base URL:
 
 ```bash
-A='SEU_USUARIO:SUA_SENHA'
-B='https://universal-monitor.<sua-conta>.workers.dev'
+A='YOUR_USER:YOUR_PASSWORD'
+B='https://universal-monitor.<your-account>.workers.dev'
 ```
 
 ### `GET /api/sites`
@@ -138,7 +139,7 @@ curl -u "$A" "$B/api/sites"
     {
       "id": 1,
       "url": "https://example.com/",
-      "name": "Exemplo",
+      "name": "Example",
       "status": "up",
       "since": 1792416135389,
       "last_check": 1792416795123,
@@ -151,34 +152,34 @@ curl -u "$A" "$B/api/sites"
 }
 ```
 
-Campos:
+Fields:
 
-| Campo | Tipo | Significado |
+| Field | Type | Meaning |
 |---|---|---|
-| `status` | `"up" \| "down" \| "unknown"` | `unknown` só até a primeira checagem |
-| `since` | epoch ms | Quando entrou no status atual. `now - since` = há quanto tempo está no ar / fora |
-| `last_check` | epoch ms | Última checagem |
-| `last_code` | número ou `null` | Último HTTP status. `null` se não houve resposta (timeout, DNS) |
-| `last_error` | string ou `null` | Motivo da falha, `null` quando no ar |
-| `now` | epoch ms | Relógio do servidor, para calcular durações no cliente |
+| `status` | `"up" \| "down" \| "unknown"` | `unknown` only until the first check |
+| `since` | epoch ms | When the current status started. `now - since` = how long it has been up / down |
+| `last_check` | epoch ms | Last check |
+| `last_code` | number or `null` | Last HTTP status. `null` when there was no response (timeout, DNS) |
+| `last_error` | string or `null` | Failure reason, `null` while up |
+| `now` | epoch ms | Server clock, for computing durations on the client |
 
 ### `POST /api/sites`
 
-Body JSON. `url` obrigatória (`http://` ou `https://`), `name` opcional (até 80 caracteres).
+JSON body. `url` is required (`http://` or `https://`), `name` is optional (up to 80 characters).
 
 ```bash
 curl -u "$A" -X POST "$B/api/sites" \
   -H 'content-type: application/json' \
-  -d '{"url":"https://meusite.com.br","name":"Meu Site"}'
+  -d '{"url":"https://mysite.com","name":"My Site"}'
 ```
 
-| Status | Quando |
+| Status | When |
 |---|---|
-| `201` | Criado. Retorna `{ "site": {...} }` já com o resultado da primeira checagem |
-| `400` | JSON inválido, URL inválida ou protocolo diferente de http/https |
-| `409` | URL já cadastrada |
+| `201` | Created. Returns `{ "site": {...} }` already containing the first check result |
+| `400` | Invalid JSON, invalid URL, or a protocol other than http/https |
+| `409` | URL already registered |
 
-A URL é normalizada (`https://meusite.com.br` vira `https://meusite.com.br/`).
+The URL is normalized (`https://mysite.com` becomes `https://mysite.com/`).
 
 ### `DELETE /api/sites/:id`
 
@@ -186,16 +187,16 @@ A URL é normalizada (`https://meusite.com.br` vira `https://meusite.com.br/`).
 curl -u "$A" -X DELETE "$B/api/sites/3"
 ```
 
-| Status | Resposta |
+| Status | Response |
 |---|---|
 | `200` | `{ "ok": true }` |
-| `404` | `{ "error": "Site não encontrado" }` |
+| `404` | `{ "error": "Site not found" }` |
 
-Remover um site fora do ar **não** gera mensagem de "voltou".
+Removing a site that is down does **not** produce a "back up" message.
 
 ### `POST /api/check`
 
-Executa uma rodada completa agora, com os mesmos efeitos do cron: grava estado, alerta transições, pinga healthchecks.
+Runs a full round now, with the same effects as the cron: saves state, alerts on transitions, pings healthchecks.
 
 ```bash
 curl -u "$A" -X POST "$B/api/check"
@@ -205,7 +206,7 @@ curl -u "$A" -X POST "$B/api/check"
 { "ok": true, "checked": 5, "up": 4, "down": 1, "alerts": 1 }
 ```
 
-`alerts` = quantas mensagens foram enviadas nessa rodada. Se o D1 falhar: `{ "ok": false, "checked": 0, ..., "error": "..." }`.
+`alerts` = how many messages were sent in this round. If D1 fails: `{ "ok": false, "checked": 0, ..., "error": "..." }`.
 
 ### `POST /api/test-telegram`
 
@@ -217,7 +218,7 @@ curl -u "$A" -X POST "$B/api/test-telegram"
 { "ok": true, "configured": true }
 ```
 
-`configured: false` = faltam `TELEGRAM_BOT_TOKEN` ou `TELEGRAM_CHAT_ID`. `ok: false` com `configured: true` = Telegram recusou (token inválido, bot removido do grupo). Veja `wrangler tail`.
+`configured: false` = `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` is missing. `ok: false` with `configured: true` = Telegram rejected the message (invalid token, bot removed from the group). See `wrangler tail`.
 
 ### `GET /api/config`
 
@@ -229,69 +230,69 @@ curl -u "$A" "$B/api/config"
 { "telegram": true, "healthchecks": true }
 ```
 
-Não expõe valores, só se estão preenchidos.
+Does not expose values, only whether they are set.
 
-### Erros
+### Errors
 
-Qualquer exceção não tratada retorna `500` com `{ "error": "mensagem" }`. Rota desconhecida: `404` com `{ "error": "Não encontrado" }`.
+Any unhandled exception returns `500` with `{ "error": "message" }`. Unknown route: `404` with `{ "error": "Not found" }`.
 
 ---
 
-## Segredos e configuração
+## Secrets and configuration
 
-Tudo sensível fica em **Cloudflare Secrets**, nunca no código nem no `wrangler.toml`.
+Everything sensitive lives in **Cloudflare Secrets**, never in the code or in `wrangler.toml`.
 
-| Nome | Obrigatório | Uso |
+| Name | Required | Purpose |
 |---|---|---|
-| `ADMIN_USER` | sim | Usuário do painel e da API |
-| `ADMIN_PASS` | sim | Senha do painel e da API |
-| `TELEGRAM_BOT_TOKEN` | sim | Token do bot, criado no `@BotFather` |
-| `TELEGRAM_CHAT_ID` | sim | Chat que recebe os alertas. Grupo começa com `-` |
-| `HEALTHCHECKS_PING_URL` | não | `https://hc-ping.com/<uuid>`. Sem ela, só não pinga |
+| `ADMIN_USER` | yes | Panel and API user |
+| `ADMIN_PASS` | yes | Panel and API password |
+| `TELEGRAM_BOT_TOKEN` | yes | Bot token from `@BotFather` |
+| `TELEGRAM_CHAT_ID` | yes | Chat that receives the alerts. Group ids start with `-` |
+| `HEALTHCHECKS_PING_URL` | no | `https://hc-ping.com/<uuid>`. Without it, pings are simply skipped |
 
-Sem `ADMIN_USER`/`ADMIN_PASS` o Worker responde `401` para tudo.
+Without `ADMIN_USER`/`ADMIN_PASS` the Worker answers `401` to everything.
 
-### Arquivos locais (ignorados pelo git)
+### Local files (git-ignored)
 
-| Arquivo | Conteúdo |
+| File | Contents |
 |---|---|
-| `.dev.vars` | Os 5 segredos acima. Usado pelo `wrangler dev` e pelo `scripts/setup.sh` |
-| `.cf.env` | `CLOUDFLARE_API_TOKEN` e `CLOUDFLARE_ACCOUNT_ID` para o wrangler autenticar sem `wrangler login` |
+| `.dev.vars` | The 5 secrets above. Used by `wrangler dev` and by `scripts/setup.sh` |
+| `.cf.env` | `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` so wrangler can authenticate without `wrangler login` |
 
-Modelo em `.dev.vars.example`.
+Template in `.dev.vars.example`.
 
-### Como obter cada credencial
+### How to get each credential
 
 **Telegram**
-1. Fale com `@BotFather` → `/newbot` → copie o token.
-2. Adicione o bot ao grupo que vai receber alertas (ou fale com ele em privado).
-3. Mande qualquer mensagem no grupo e descubra o `chat_id`:
+1. Talk to `@BotFather` → `/newbot` → copy the token.
+2. Add the bot to the group that will receive alerts (or message it directly).
+3. Send any message in the group and look up the `chat_id`:
    ```bash
    curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | python3 -m json.tool | grep -A3 '"chat"'
    ```
 
 **healthchecks.io**
-1. Crie conta → **Add Check** → nome `universal-monitor`.
-2. Schedule: **Period 5 min, Grace 10 min** (tolera atrasos normais do cron, avisa em até 15 min).
+1. Create an account → **Add Check** → name it `universal-monitor`.
+2. Schedule: **Period 5 min, Grace 10 min** (tolerates normal cron delays, alerts within ~15 min).
 3. Integrations → Telegram → Connect.
-4. Copie a Ping URL (`https://hc-ping.com/<uuid>`).
+4. Copy the Ping URL (`https://hc-ping.com/<uuid>`).
 
-**Cloudflare API token** (alternativa ao `wrangler login`, que pode falhar com erro de CSRF no browser)
+**Cloudflare API token** (alternative to `wrangler login`, which can fail with a CSRF error in the browser)
 1. `dash.cloudflare.com` → Manage Account → **Account API Tokens** → Create Token.
-2. Template **Edit Cloudflare Workers** + adicione **Account → D1 → Edit**.
-3. Account ID: Workers & Pages, lado direito da tela.
+2. Template **Edit Cloudflare Workers** + add **Account → D1 → Edit**.
+3. Account ID: Workers & Pages, right-hand side of the page.
 
 ---
 
-## Deploy do zero
+## Deploy from scratch
 
-Pré-requisito: Node 22+.
+Prerequisite: Node 22+.
 
 ```bash
 git clone <repo> universal-monitor && cd universal-monitor
 npm install
 
-cp .dev.vars.example .dev.vars        # preencha os 5 segredos
+cp .dev.vars.example .dev.vars        # fill in the 5 secrets
 cat > .cf.env <<'EOF2'
 export CLOUDFLARE_ACCOUNT_ID=<account id>
 export CLOUDFLARE_API_TOKEN=<token>
@@ -302,136 +303,136 @@ source .cf.env
 ./scripts/setup.sh
 ```
 
-O `setup.sh` faz, nesta ordem:
+`setup.sh` does, in order:
 
-1. Cria o banco D1 `universal-monitor` e grava o `database_id` no `wrangler.toml` (só na primeira vez).
-2. Aplica as migrations em `migrations/` no banco remoto.
-3. Sobe cada linha não vazia do `.dev.vars` como secret (`wrangler secret put`).
+1. Creates the D1 database `universal-monitor` and writes its `database_id` into `wrangler.toml` (first run only).
+2. Applies the migrations in `migrations/` to the remote database.
+3. Uploads every non-empty line of `.dev.vars` as a secret (`wrangler secret put`).
 4. `wrangler deploy`.
 
-Ao final imprime a URL `https://universal-monitor.<conta>.workers.dev` e os dois crons.
+At the end it prints the URL `https://universal-monitor.<account>.workers.dev` and the two crons.
 
-**Os cron triggers podem levar até ~15 min para começar a disparar após o primeiro deploy.** É propagação normal da Cloudflare, não erro. Enquanto isso, `POST /api/check` funciona.
+**Cron triggers can take up to ~15 minutes to start firing after the first deploy.** That is normal Cloudflare propagation, not an error. In the meantime, `POST /api/check` works.
 
 ---
 
-## Operação do dia a dia
+## Day-to-day operations
 
-Sempre `source .cf.env` antes de qualquer comando `wrangler`.
+Always `source .cf.env` before any `wrangler` command.
 
-| Tarefa | Comando |
+| Task | Command |
 |---|---|
-| Atualizar código | `npm run deploy` |
-| Ver logs ao vivo (crons, erros, Telegram) | `npm run tail` |
-| Trocar um segredo | `npx wrangler secret put TELEGRAM_CHAT_ID` (pede o valor) |
-| Listar segredos | `npx wrangler secret list` |
-| Ver sites direto no banco | `npx wrangler d1 execute universal-monitor --remote --command "SELECT id,url,status FROM sites"` |
-| Nova migration | criar `migrations/0002_xxx.sql` e rodar `npm run db:migrate` |
-| Forçar uma rodada | `curl -u user:senha -X POST $B/api/check` |
-| Pausar o monitor | Cloudflare dash → Worker → Settings → Triggers → desabilitar crons (ou `crons = []` no toml + deploy) |
+| Deploy code changes | `npm run deploy` |
+| Live logs (crons, errors, Telegram) | `npm run tail` |
+| Change a secret | `npx wrangler secret put TELEGRAM_CHAT_ID` (prompts for the value) |
+| List secrets | `npx wrangler secret list` |
+| Query the database directly | `npx wrangler d1 execute universal-monitor --remote --command "SELECT id,url,status FROM sites"` |
+| New migration | create `migrations/0002_xxx.sql` and run `npm run db:migrate` |
+| Force a check round | `curl -u user:password -X POST $B/api/check` |
+| Pause the monitor | Cloudflare dash → Worker → Settings → Triggers → disable the crons (or `crons = []` in the toml + deploy) |
 
-Trocar o grupo do Telegram: adicione o bot no novo grupo, descubra o `chat_id` com `getUpdates`, rode `npx wrangler secret put TELEGRAM_CHAT_ID`. Não precisa redeploy.
+Changing the Telegram group: add the bot to the new group, find the `chat_id` with `getUpdates`, run `npx wrangler secret put TELEGRAM_CHAT_ID`. No redeploy needed.
 
-Trocar a senha do painel: `npx wrangler secret put ADMIN_PASS`. Atualize o `.dev.vars` também, senão o próximo `setup.sh` sobrescreve.
-
----
-
-## Desenvolvimento local
-
-```bash
-npm run db:migrate:local      # cria o D1 local em .wrangler/
-npm run dev                   # http://127.0.0.1:8787, lê .dev.vars
-```
-
-Miniflare roda o Worker de verdade, com D1 local e acesso à internet. Os `fetch` nos sites são reais, e o Telegram e healthchecks também, se estiverem preenchidos no `.dev.vars`. Deixe `TELEGRAM_*` vazio para só logar as mensagens no console.
-
-Disparar os crons manualmente (`--test-scheduled` já está no script `dev`):
-
-```bash
-curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"    # rodada de checagem
-curl "http://127.0.0.1:8787/__scheduled?cron=0+1+*+*+*"    # resumo diário
-```
-
-Typecheck: `npm run typecheck`. Build sem publicar: `npx wrangler deploy --dry-run`.
+Changing the panel password: `npx wrangler secret put ADMIN_PASS`. Update `.dev.vars` too, otherwise the next `setup.sh` overwrites it.
 
 ---
 
-## Limites do plano grátis
+## Local development
 
-| Limite | Valor | Impacto |
+```bash
+npm run db:migrate:local      # creates the local D1 under .wrangler/
+npm run dev                   # http://127.0.0.1:8787, reads .dev.vars
+```
+
+Miniflare runs the real Worker runtime, with a local D1 and internet access. The `fetch` calls to your sites are real, and so are Telegram and healthchecks if they are filled in `.dev.vars`. Leave `TELEGRAM_*` empty to only log the messages to the console.
+
+Trigger the crons manually (`--test-scheduled` is already in the `dev` script):
+
+```bash
+curl "http://127.0.0.1:8787/__scheduled?cron=*+*+*+*+*"    # check round
+curl "http://127.0.0.1:8787/__scheduled?cron=0+1+*+*+*"    # daily summary
+```
+
+Typecheck: `npm run typecheck`. Build without publishing: `npx wrangler deploy --dry-run`.
+
+---
+
+## Free plan limits
+
+| Limit | Value | Impact |
 |---|---|---|
-| Requests por dia | 100.000 | Cron usa 1.440/dia. Sobra |
-| Subrequests por execução | 50 | Cada site = 1 fetch (2 se falhar) + Telegram por alerta + 1 healthchecks + D1. **Confortável até ~20 sites.** Acima disso, dividir em lotes |
-| CPU por execução | 10 ms | Tempo esperando resposta dos sites não conta. Ok |
-| Cron triggers | 5 por Worker | Usamos 2 |
-| D1 | 5 M leituras/dia, 100 k escritas/dia, 5 GB | Cron faz 1 leitura + 1 batch de escrita por minuto. Sobra |
-| Cron Triggers | "best effort" | Podem atrasar ou pular execuções em incidentes. Por isso o healthchecks.io |
+| Requests per day | 100,000 | The cron uses 1,440/day. Plenty of headroom |
+| Subrequests per execution | 50 | Each site = 1 fetch (2 on failure) + 1 Telegram call per alert + 1 healthchecks + D1. **Comfortable up to ~20 sites.** Beyond that, split into batches |
+| CPU per execution | 10 ms | Time spent waiting on the sites does not count. Fine |
+| Cron triggers | 5 per Worker | We use 2 |
+| D1 | 5M reads/day, 100k writes/day, 5 GB | The cron does 1 read + 1 batched write per minute. Plenty |
+| Cron triggers | "best effort" | May be delayed or skipped during incidents. Hence healthchecks.io |
 
-Fonte oficial: https://developers.cloudflare.com/workers/platform/limits/
+Official source: https://developers.cloudflare.com/workers/platform/limits/
 
 ---
 
-## Solução de problemas
+## Troubleshooting
 
-**Cron não dispara após deploy.** Espere até 15 min. Confira se está registrado:
+**Cron does not fire after deploy.** Wait up to 15 min. Confirm it is registered:
 ```bash
 source .cf.env
 curl -s "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/universal-monitor/schedules" \
   -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"
 ```
 
-**`wrangler login` falha com `request_forbidden` / `No CSRF value available in the session cookie`.** Cookie bloqueado no browser. Use API token (`.cf.env`) em vez de OAuth.
+**`wrangler login` fails with `request_forbidden` / `No CSRF value available in the session cookie`.** Cookie blocked by the browser. Use an API token (`.cf.env`) instead of OAuth.
 
-**`Authentication error [code: 10000]` ao criar D1.** Token sem permissão `D1 → Edit`. Edite o token no dash, o valor não muda.
+**`Authentication error [code: 10000]` when creating D1.** The token lacks `D1 → Edit`. Edit the token in the dash; its value does not change.
 
-**Painel pede senha em loop.** `ADMIN_USER`/`ADMIN_PASS` não batem ou não foram subidos. `npx wrangler secret list` para conferir.
+**Panel keeps asking for the password.** `ADMIN_USER`/`ADMIN_PASS` do not match or were never uploaded. Check with `npx wrangler secret list`.
 
-**Telegram não chega.** `POST /api/test-telegram`. Se `configured: false`, falta secret. Se `ok: false`, veja `npm run tail`: erro `chat not found` = `chat_id` errado ou bot fora do grupo; `401 Unauthorized` = token inválido.
+**Telegram messages do not arrive.** `POST /api/test-telegram`. If `configured: false`, a secret is missing. If `ok: false`, look at `npm run tail`: `chat not found` = wrong `chat_id` or bot not in the group; `401 Unauthorized` = invalid token.
 
-**Site aparece fora mas abre no browser.** Alguns sites bloqueiam bots por User-Agent ou retornam 403 para a rede da Cloudflare. O monitor manda `User-Agent: universal-monitor/1.0 (uptime check)`. Libere esse UA ou crie uma rota de health check pública no site.
+**A site shows as down but opens in the browser.** Some sites block bots by User-Agent or return 403 to Cloudflare's network. The monitor sends `User-Agent: universal-monitor/1.0 (uptime check)`. Allow that UA or expose a public health-check route on the site.
 
-**Site atrás do Cloudflare proxy.** Funciona normalmente. Se a origem cair, o status vem como 521/522/523 e a mensagem explica.
+**Site behind Cloudflare proxy.** Works normally. If the origin goes down the status comes back as 521/522/523 and the message explains it.
 
-**Falso positivo isolado.** O retry de 2 s já cobre a maioria. Se persistir, aumente `RETRY_DELAY_MS` ou `CHECK_TIMEOUT_MS` em `src/index.ts`.
+**Isolated false positive.** The 2 s retry already covers most cases. If it persists, raise `RETRY_DELAY_MS` or `CHECK_TIMEOUT_MS` in `src/index.ts`.
 
 ---
 
-## Antes de publicar o repositório
+## Before publishing the repository
 
-Nada sensível é versionado: `.dev.vars` e `.cf.env` estão no `.gitignore`. Antes de um `git push` público, confirme:
+Nothing sensitive is versioned: `.dev.vars` and `.cf.env` are in `.gitignore`. Before a public `git push`, confirm:
 
 ```bash
-git ls-files | grep -E '\.dev\.vars$|\.cf\.env$' && echo "PERIGO: arquivo de segredo rastreado"
-git grep -nE '[0-9]{9,10}:[A-Za-z0-9_-]{35}|cfat_[A-Za-z0-9]+|hc-ping\.com/[0-9a-f]{8}' && echo "PERIGO: segredo no código"
+git ls-files | grep -E '\.dev\.vars$|\.cf\.env$' && echo "DANGER: secret file is tracked"
+git grep -nE '[0-9]{9,10}:[A-Za-z0-9_-]{35}|cfat_[A-Za-z0-9]+|hc-ping\.com/[0-9a-f]{8}' && echo "DANGER: secret in the code"
 ```
 
-Os dois comandos devem ficar em silêncio. O `database_id` do D1 no `wrangler.toml` não é segredo: sem token da conta ele não serve para nada.
+Both commands should print nothing. The D1 `database_id` in `wrangler.toml` is not a secret: without the account token it is useless.
 
-Se um segredo vazar, revogue na origem (BotFather `/revoke`, dash da Cloudflare, healthchecks "Regenerate"), não basta apagar do git.
+If a secret ever leaks, revoke it at the source (BotFather `/revoke`, Cloudflare dash, healthchecks "Regenerate"). Deleting it from git is not enough.
 
 ---
 
-## Estrutura do projeto
+## Project structure
 
 ```
 universal-monitor/
 ├── src/
-│   ├── index.ts          # Worker: scheduled (crons) + fetch (painel e API)
-│   ├── admin.html        # painel, servido como texto pelo Worker
-│   └── html.d.ts         # tipagem do import de .html
+│   ├── index.ts          # Worker: scheduled (crons) + fetch (panel and API)
+│   ├── admin.html        # panel, served as text by the Worker
+│   └── html.d.ts         # typing for the .html import
 ├── migrations/
-│   └── 0001_init.sql     # tabela sites
+│   └── 0001_init.sql     # sites table
 ├── scripts/
-│   └── setup.sh          # cria D1, migra, sobe secrets, deploy
-├── wrangler.toml         # nome, crons, binding D1, regra para .html
-├── package.json          # scripts npm
+│   └── setup.sh          # creates D1, migrates, uploads secrets, deploys
+├── wrangler.toml         # name, crons, D1 binding, .html rule
+├── package.json          # npm scripts
 ├── tsconfig.json
-├── .dev.vars.example     # modelo dos segredos
-├── .dev.vars             # (ignorado) segredos reais
-└── .cf.env               # (ignorado) token e account id da Cloudflare
+├── .dev.vars.example     # secrets template
+├── .dev.vars             # (ignored) real secrets
+└── .cf.env               # (ignored) Cloudflare token and account id
 ```
 
-Schema do D1:
+D1 schema:
 
 ```sql
 CREATE TABLE sites (
@@ -439,20 +440,20 @@ CREATE TABLE sites (
   url TEXT NOT NULL UNIQUE,
   name TEXT,
   status TEXT NOT NULL DEFAULT 'unknown',   -- up | down | unknown
-  since INTEGER,                            -- epoch ms da última mudança de status
+  since INTEGER,                            -- epoch ms of the last status change
   last_check INTEGER,                       -- epoch ms
-  last_code INTEGER,                        -- último HTTP status, NULL se sem resposta
-  last_error TEXT,                          -- motivo da falha, NULL se no ar
+  last_code INTEGER,                        -- last HTTP status, NULL when no response
+  last_error TEXT,                          -- failure reason, NULL while up
   created_at INTEGER NOT NULL
 );
 ```
 
-Constantes ajustáveis em `src/index.ts`:
+Tunable constants in `src/index.ts`:
 
-| Constante | Padrão | Função |
+| Constant | Default | Purpose |
 |---|---|---|
-| `CHECK_TIMEOUT_MS` | 10 000 | Timeout por fetch |
-| `RETRY_DELAY_MS` | 2 000 | Espera antes do retry |
-| `DAILY_CRON` | `0 1 * * *` | Precisa bater com o segundo cron do `wrangler.toml` |
-| `TZ` | `America/Sao_Paulo` | Fuso das mensagens |
-| `USER_AGENT` | `universal-monitor/1.0 (uptime check)` | UA enviado aos sites |
+| `CHECK_TIMEOUT_MS` | 10 000 | Per-fetch timeout |
+| `RETRY_DELAY_MS` | 2 000 | Wait before the retry |
+| `DAILY_CRON` | `0 1 * * *` | Must match the second cron in `wrangler.toml` |
+| `TZ` | `America/Sao_Paulo` | Time zone used in messages |
+| `USER_AGENT` | `universal-monitor/1.0 (uptime check)` | UA sent to the sites |
