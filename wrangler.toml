@@ -1,0 +1,21 @@
+name = "universal-monitor"
+main = "src/index.ts"
+compatibility_date = "2025-10-01"
+
+[triggers]
+# Every minute: check all sites. 01:00 UTC = 22:00 America/Sao_Paulo: daily "all ok" report.
+crons = ["* * * * *", "0 1 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "universal-monitor"
+database_id = "aeb6057c-0193-426c-a64a-da7ad5c1963d"
+migrations_dir = "migrations"
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = true
+
+[observability]
+enabled = true

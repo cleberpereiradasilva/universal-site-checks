@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Universal Monitor</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1a1d21; --muted: #6b7280; --border: #e3e5e8;
+    --up: #16a34a; --down: #dc2626; --unknown: #9ca3af; --accent: #2563eb; --danger: #b91c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --card: #171a21; --text: #e6e8eb; --muted: #9aa1ab; --border: #2a2f39; --accent: #3b82f6; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text); font: 15px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  form { display: grid; grid-template-columns: 1fr; gap: 8px; }
+  @media (min-width: 640px) { form { grid-template-columns: 2fr 1fr auto; } }
+  input { padding: 9px 11px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; width: 100%; }
+  button { padding: 9px 14px; border: 0; border-radius: 7px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; white-space: nowrap; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  button.del { background: transparent; color: var(--danger); border: 1px solid var(--border); padding: 5px 10px; font-size: 13px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-top: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; border-top: 0; }
+  td.st { white-space: nowrap; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .up .dot { background: var(--up); } .down .dot { background: var(--down); } .unknown .dot { background: var(--unknown); }
+  .url { color: var(--muted); font-size: 13px; word-break: break-all; }
+  .name { font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .msg { font-size: 13px; min-height: 18px; margin-top: 8px; }
+  .msg.err { color: var(--down); } .msg.ok { color: var(--up); }
+  .empty { color: var(--muted); padding: 20px 8px; text-align: center; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); }
+  .pill.on { color: var(--up); } .pill.off { color: var(--down); }
+  @media (max-width: 640px) { th:nth-child(3), td:nth-child(3) { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Universal Monitor</h1>
+  <div class="sub">
+    <span>Checa a cada 1 min. Alerta no Telegram ao cair e ao voltar. Resumo diário às 22h.</span>
+    <span id="cfg"></span>
+  </div>
+
+  <div class="card">
+    <form id="add">
+      <input id="url" type="url" placeholder="https://meusite.com" required>
+      <input id="name" type="text" placeholder="Nome (opcional)" maxlength="80">
+      <button type="submit" id="addBtn">Adicionar</button>
+    </form>
+    <div class="msg" id="addMsg"></div>
+  </div>
+
+  <div class="card">
+    <div class="actions">
+      <button class="ghost" id="checkBtn">Checar agora</button>
+      <button class="ghost" id="tgBtn">Testar Telegram</button>
+      <span class="msg" id="actMsg"></span>
+    </div>
+    <table>
+      <thead><tr><th>Status</th><th>Site</th><th>Última checagem</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>Nenhum site cadastrado.</div>
+  </div>
+</main>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const fmtTime = (ts) => ts ? new Date(ts).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—';
+  const fmtDur = (ms) => {
+    const m = Math.round(ms / 60000);
+    if (m < 1) return 'menos de 1 min';
+    if (m < 60) return m + ' min';
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + 'h' + (m % 60 ? ' ' + (m % 60) + 'min' : '');
+    const d = Math.floor(h / 24);
+    return d + 'd' + (h % 24 ? ' ' + (h % 24) + 'h' : '');
+  };
+  const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const setMsg = (el, text, cls) => { el.textContent = text; el.className = 'msg' + (cls ? ' ' + cls : ''); };
+
+  async function api(path, opts) {
+    const res = await fetch(path, { headers: { 'content-type': 'application/json' }, ...opts });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('Erro ' + res.status));
+    return data;
+  }
+
+  async function load() {
+    const { sites, now } = await api('/api/sites');
+    const rows = $('rows');
+    rows.innerHTML = '';
+    $('empty').hidden = sites.length > 0;
+    for (const s of sites) {
+      const tr = document.createElement('tr');
+      tr.className = s.status;
+      const stText = s.status === 'up' ? 'No ar' : s.status === 'down' ? 'Fora' : 'Aguardando';
+      const sinceText = s.since && s.status !== 'unknown' ? ' há ' + fmtDur(now - s.since) : '';
+      const detail = s.last_code ? 'HTTP ' + s.last_code : (s.last_error || '');
+      tr.innerHTML =
+        '<td class="st"><span class="dot"></span>' + stText + '<div class="meta">' + escapeHtml(sinceText) + '</div></td>' +
+        '<td><div class="name">' + escapeHtml(s.name || '') + '</div><div class="url">' + escapeHtml(s.url) + '</div></td>' +
+        '<td class="meta">' + fmtTime(s.last_check) + '<br>' + escapeHtml(detail) + '</td>' +
+        '<td><button class="del" data-id="' + s.id + '" data-label="' + escapeHtml(s.name || s.url) + '">Remover</button></td>';
+      rows.appendChild(tr);
+    }
+  }
+
+  async function loadConfig() {
+    try {
+      const c = await api('/api/config');
+      $('cfg').innerHTML =
+        '<span class="pill ' + (c.telegram ? 'on' : 'off') + '">Telegram ' + (c.telegram ? 'ok' : 'não configurado') + '</span> ' +
+        '<span class="pill ' + (c.healthchecks ? 'on' : 'off') + '">Healthchecks ' + (c.healthchecks ? 'ok' : 'não configurado') + '</span>';
+    } catch {}
+  }
+
+  $('add').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = $('addBtn');
+    btn.disabled = true;
+    setMsg($('addMsg'), 'Adicionando e checando...');
+    try {
+      await api('/api/sites', { method: 'POST', body: JSON.stringify({ url: $('url').value, name: $('name').value }) });
+      $('url').value = ''; $('name').value = '';
+      setMsg($('addMsg'), 'Adicionado.', 'ok');
+      await load();
+    } catch (err) {
+      setMsg($('addMsg'), err.message, 'err');
+    } finally { btn.disabled = false; }
+  });
+
+  $('rows').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button.del');
+    if (!btn) return;
+    if (!confirm('Remover ' + btn.dataset.label + '?')) return;
+    btn.disabled = true;
+    try { await api('/api/sites/' + btn.dataset.id, { method: 'DELETE' }); await load(); }
+    catch (err) { alert(err.message); btn.disabled = false; }
+  });
+
+  $('checkBtn').addEventListener('click', async () => {
+    const btn = $('checkBtn');
+    btn.disabled = true;
+    setMsg($('actMsg'), 'Checando...');
+    try {
+      const r = await api('/api/check', { method: 'POST' });
+      setMsg($('actMsg'), r.ok ? (r.up + ' no ar, ' + r.down + ' fora, ' + r.alerts + ' alerta(s)') : ('Erro: ' + r.error), r.ok ? 'ok' : 'err');
+      await load();
+    } catch (err) { setMsg($('actMsg'), err.message, 'err'); }
+    finally { btn.disabled = false; }
+  });
+
+  $('tgBtn').addEventListener('click', async () => {
+    const btn = $('tgBtn');
+    btn.disabled = true;
+    setMsg($('actMsg'), 'Enviando...');
+    try {
+      const r = await api('/api/test-telegram', { method: 'POST' });
+      setMsg($('actMsg'), r.ok ? 'Mensagem enviada. Confere no Telegram.' : (r.configured ? 'Telegram recusou. Veja os logs.' : 'Telegram não configurado.'), r.ok ? 'ok' : 'err');
+    } catch (err) { setMsg($('actMsg'), err.message, 'err'); }
+    finally { btn.disabled = false; }
+  });
+
+  load().catch((err) => setMsg($('actMsg'), err.message, 'err'));
+  loadConfig();
+  setInterval(() => load().catch(() => {}), 30000);
+</script>
+</body>
+</html>

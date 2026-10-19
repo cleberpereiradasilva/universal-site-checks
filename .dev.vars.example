@@ -1,0 +1,6 @@
+# Copy to .dev.vars for local dev. In production these are Cloudflare secrets (wrangler secret put).
+ADMIN_USER=admin
+ADMIN_PASS=change-me
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_CHAT_ID=
+HEALTHCHECKS_PING_URL=
