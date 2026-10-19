@@ -40,7 +40,8 @@
   .empty { color: var(--muted); padding: 20px 8px; text-align: center; }
   .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border); }
   .pill.on { color: var(--up); } .pill.off { color: var(--down); }
-  @media (max-width: 640px) { th:nth-child(3), td:nth-child(3) { display: none; } }
+  td.num, th.num { color: var(--muted); width: 1%; white-space: nowrap; text-align: right; }
+  @media (max-width: 640px) { th:nth-child(4), td:nth-child(4) { display: none; } }
 </style>
 </head>
 <body>
@@ -67,7 +68,7 @@
       <span class="msg" id="actMsg"></span>
     </div>
     <table>
-      <thead><tr><th>Status</th><th>Site</th><th>Last check</th><th></th></tr></thead>
+      <thead><tr><th class="num">#</th><th>Status</th><th>Site</th><th>Last check</th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
     <div class="empty" id="empty" hidden>No sites registered yet.</div>
@@ -101,19 +102,20 @@
     const rows = $('rows');
     rows.innerHTML = '';
     $('empty').hidden = sites.length > 0;
-    for (const s of sites) {
+    sites.forEach((s, i) => {
       const tr = document.createElement('tr');
       tr.className = s.status;
       const stText = s.status === 'up' ? 'Up' : s.status === 'down' ? 'Down' : 'Pending';
       const sinceText = s.since && s.status !== 'unknown' ? 'for ' + fmtDur(now - s.since) : '';
       const detail = s.last_code ? 'HTTP ' + s.last_code : (s.last_error || '');
       tr.innerHTML =
+        '<td class="num">' + (i + 1) + '</td>' +
         '<td class="st"><span class="dot"></span>' + stText + '<div class="meta">' + escapeHtml(sinceText) + '</div></td>' +
         '<td><div class="name">' + escapeHtml(s.name || '') + '</div><div class="url">' + escapeHtml(s.url) + '</div></td>' +
         '<td class="meta">' + fmtTime(s.last_check) + '<br>' + escapeHtml(detail) + '</td>' +
         '<td><button class="del" data-id="' + s.id + '" data-label="' + escapeHtml(s.name || s.url) + '">Remove</button></td>';
       rows.appendChild(tr);
-    }
+    });
   }
 
   async function loadConfig() {
